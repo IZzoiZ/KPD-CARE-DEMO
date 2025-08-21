@@ -1,0 +1,614 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>KPD Treatment Timer</title>
+    <!-- Tailwind CSS via CDN for rapid styling -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Heroicons for professional SVG icons -->
+    <script src="https://cdn.jsdelivr.net/npm/@heroicons/react@1.0.6/dist/index.js"></script>
+    <style>
+        /* Safe area for mobile status bars and notches */
+        :root { --safe-top: env(safe-area-inset-top); --safe-bottom: env(safe-area-inset-bottom); }
+        body { padding-top: var(--safe-top); padding-bottom: var(--safe-bottom); }
+        /* Hide number input spinners for cleaner design on mobile */
+        input[type=number]::-webkit-inner-spin-button, input[type=number]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+        /* Custom progress bar styles */
+        .progress-bar-container { height: 8px; border-radius: 9999px; background-color: #e2e8f0; overflow: hidden; }
+        .progress-bar { height: 100%; border-radius: 9999px; background-color: #16a34a; transition: width 1s linear; }
+        /* Dark mode overrides */
+        [data-theme='dark'] {
+            background-color: #1a1a1a;
+            color: #f1f1f1;
+        }
+        [data-theme='dark'] .bg-slate-50 { background-color: #2a2a2a; }
+        [data-theme='dark'] .bg-white { background-color: #1a1a1a; border-color: #444; }
+        [data-theme='dark'] .bg-white\/80 { background-color: rgba(26,26,26,0.8); }
+        [data-theme='dark'] .shadow, [data-theme='dark'] .shadow-sm { box-shadow: 0 1px 3px 0 rgba(0,0,0,0.5), 0 1px 2px 0 rgba(0,0,0,0.3); }
+        [data-theme='dark'] .text-slate-800, [data-theme='dark'] .text-slate-600 { color: #ccc; }
+        [data-theme='dark'] .border-slate-200 { border-color: #444; }
+        [data-theme='dark'] .border-slate-300 { border-color: #666; }
+    </style>
+</head>
+<body class="bg-slate-50 text-slate-800">
+    <div id="root"></div>
+
+    <!-- React + ReactDOM (UMD) + Babel -->
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+    <!-- Firebase (Compat) via CDN: App + Auth + Firestore -->
+    <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
+
+    <!-- ======= Firebase Config (EDIT THESE VALUES) ======= -->
+    <script>
+        // Replace with your Firebase project config. Leave as-is for demo mode.
+        window.__FIREBASE_CONFIG__ = {
+            apiKey: "AIzaSyCYxTOgU9J-945FtR5mLt1BX0HchCxHj6g",
+            authDomain: "kpd-care.firebaseapp.com",
+            projectId: "kpd-care",
+            storageBucket: "kpd-care.firebasestorage.app",
+            messagingSenderId: "833639795609",
+            appId: "1:833639795609:web:6f7a8251319515f4a4a108",
+            measurementId: "G-448HC523ZH"
+        };
+        // The Canvas environment provides these global variables.
+        const appIdFromCanvas = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        const firebaseConfigFromCanvas = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : null;
+        const initialAuthTokenFromCanvas = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+    </script>
+
+    <!-- ======= App Code (JSX via Babel) ======= -->
+    <script type="text/babel">
+        const { useEffect, useMemo, useRef, useState } = React;
+
+        /*************************
+         * Utility Helpers
+         *************************/
+        const APP_VERSION = '2.1.0';
+        const DEFAULT_PHASES = ["Warming", "Filling", "Dwell", "Draining"];
+        const DEFAULT_DURATIONS = {
+            Warming: 900,   // 15 minutes
+            Filling: 600,   // 10 minutes
+            Dwell: 7200,    // 2 hours
+            Draining: 900,  // 15 minutes
+        };
+
+        function classNames(...xs){ return xs.filter(Boolean).join(' '); }
+
+        function fmtDuration(seconds){
+            const s = Math.max(0, Math.floor(seconds));
+            const hh = Math.floor(s / 3600).toString().padStart(2,'0');
+            const mm = Math.floor((s % 3600) / 60).toString().padStart(2,'0');
+            const ss = (s % 60).toString().padStart(2,'0');
+            return `${hh}:${mm}:${ss}`;
+        }
+
+        function nowTs(){ return new Date(); }
+
+        function tsString(d){
+            try {
+                return new Intl.DateTimeFormat(undefined, {
+                    year: 'numeric', month: 'short', day: '2-digit',
+                    hour: '2-digit', minute: '2-digit', second: '2-digit'
+                }).format(d);
+            } catch {
+                return d.toISOString();
+            }
+        }
+
+        function useToasts(){
+            const [toasts, setToasts] = useState([]);
+            const push = (text, ms=4000) => {
+                const id = Math.random().toString(36).slice(2);
+                setToasts(t => [...t, { id, text }]);
+                if(ms){ setTimeout(() => setToasts(t => t.filter(x => x.id !== id)), ms); }
+            };
+            return { toasts, push };
+        }
+
+        function useTheme(){
+            const [theme, setTheme] = useState(localStorage.getItem('theme') || 'light');
+            const toggleTheme = () => {
+                const newTheme = theme === 'light' ? 'dark' : 'light';
+                setTheme(newTheme);
+                localStorage.setItem('theme', newTheme);
+            };
+            useEffect(() => {
+                document.documentElement.setAttribute('data-theme', theme);
+            }, [theme]);
+            return [theme, toggleTheme];
+        }
+
+        function playSound(src){
+            try {
+                const audio = new Audio(src);
+                audio.play();
+            } catch(e) { console.warn("Audio playback failed:", e); }
+        }
+
+        const dingSound = 'data:audio/wav;base64,UklGRl9AAABXQVZFZm10IBAAAAABAAEARKwAAIhYAAACABAAZGF0YR8AAABe4CgAKl8oACVfAACqXwAArl8AAJpeAACaXAAArl8AAL5eAACYXgAALWMAAC5jAACjXwAAmGIAADhiAAAwZgAAcWgAACtqAACxbgAAtnAAAJV2AAC3cAAAj3YAAJt2AAC2dQAACF4AACdgAABkYQAAoVwAACVhAAAYXgAALmEAAHxjAABlYwAAL2MAAGdjAAB9agAAk3YAAHlwAAAj3YAAA7gAAAH3AAAO4AAAHoAAAAhYAAAMWAAACEAAAoGAAAKGAAG2AAQ4AIAAnAAAAA==';
+
+        /*************************
+         * Firebase / Mock Layer
+         * Handles authentication and data persistence.
+         *************************/
+        function isConfigReady(cfg){
+            if(!cfg) return false;
+            const vals = Object.values(cfg||{}).join(',');
+            return !(vals.includes('AIzaSy') || vals.includes('YOUR_PROJECT'));
+        }
+
+        function useFirebase(){
+            const [state, setState] = useState({ mode: 'loading', user: null, db: null, error: null });
+            const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+
+            useEffect(() => {
+                let isCancelled = false;
+                (async () => {
+                    try {
+                        let app;
+                        let db;
+                        let auth;
+                        let user;
+
+                        const firebaseConfig = firebaseConfigFromCanvas || window.__FIREBASE_CONFIG__;
+                        if(isConfigReady(firebaseConfig)){
+                             // Live mode using Firestore
+                            app = firebase.initializeApp(firebaseConfig);
+                            db = firebase.firestore();
+                            auth = firebase.auth();
+
+                            // Wait for auth to be ready
+                            const authReady = new Promise(resolve => {
+                                const unsubscribe = auth.onAuthStateChanged(firebaseUser => {
+                                    if(firebaseUser) resolve(firebaseUser);
+                                    unsubscribe();
+                                });
+                            });
+
+                            if(initialAuthTokenFromCanvas) {
+                                await auth.signInWithCustomToken(initialAuthTokenFromCanvas);
+                            } else {
+                                await auth.signInAnonymously();
+                            }
+                            user = await authReady;
+
+                            if(!isCancelled){
+                                setState({ mode: 'live', user, db, error: null });
+                            }
+                        } else {
+                            // Demo/local mode using localStorage to "mock" Firestore
+                            if(!isCancelled){
+                                setState({ mode: 'demo', user: { uid: 'demo-user' }, db: null, error: null });
+                            }
+                        }
+                    } catch (e){
+                        console.error("Firebase Initialization Error:", e);
+                        if(!isCancelled){
+                            setState({ mode: 'error', user: null, db: null, error: e });
+                        }
+                    }
+                })();
+                return () => { isCancelled = true; };
+            }, []);
+            return state;
+        }
+
+        // Local demo storage helpers
+        function demoSave(appId, userId, entry){
+            const key = `kpd.sessions.${appId}.${userId}`;
+            const arr = JSON.parse(localStorage.getItem(key) || '[]');
+            arr.push(entry);
+            localStorage.setItem(key, JSON.stringify(arr));
+            try { localStorage.setItem(`${key}.ping`, String(Date.now())); } catch {}
+        }
+        function demoSubscribe(appId, userId, cb){
+            const key = `kpd.sessions.${appId}.${userId}`;
+            const emit = () => {
+                const arr = JSON.parse(localStorage.getItem(key) || '[]');
+                arr.sort((a,b) => (b.createdAt?.toMillis || b.createdAt) - (a.createdAt?.toMillis || a.createdAt));
+                cb(arr);
+            };
+            emit();
+            const handler = (e) => {
+                if(e.key && (e.key === key || e.key === `${key}.ping`)) emit();
+            };
+            window.addEventListener('storage', handler);
+            return () => window.removeEventListener('storage', handler);
+        }
+
+        /*************************
+         * Main App Component
+         *************************/
+        function App(){
+            const appId = useMemo(() => appIdFromCanvas, []);
+            const { toasts, push } = useToasts();
+            const [theme, toggleTheme] = useTheme();
+            const [showModal, setShowModal] = useState(null);
+
+            const fb = useFirebase();
+
+            // Timer state
+            const [phaseIndex, setPhaseIndex] = useState(0);
+            const [isRunning, setIsRunning] = useState(false);
+            const [phaseStart, setPhaseStart] = useState(null);
+            const [elapsed, setElapsed] = useState(0);
+            const tickRef = useRef(null);
+            const userId = fb.user?.uid || '—';
+
+            // Settings state, persisted via localStorage
+            const [durations, setDurations] = useState(() => {
+                const stored = localStorage.getItem('kpd.durations');
+                return stored ? JSON.parse(stored) : DEFAULT_DURATIONS;
+            });
+            const [dailyTime, setDailyTime] = useState(localStorage.getItem('kpd.dailyTime') || '');
+            const reminderTimerRef = useRef(null);
+
+            const currentPhase = DEFAULT_PHASES[phaseIndex];
+            const currentDuration = durations[currentPhase] || 0;
+            const progress = (currentDuration > 0) ? (elapsed / currentDuration) * 100 : 0;
+
+            // Live timer tick logic
+            useEffect(() => {
+                if(!isRunning){
+                    if(tickRef.current){ clearInterval(tickRef.current); tickRef.current=null; }
+                    return;
+                }
+                const interval = setInterval(() => {
+                    setElapsed(prev => {
+                        const next = prev + 1;
+                        if(next >= currentDuration){
+                            setTimeout(() => advancePhase('auto'), 0);
+                            return prev;
+                        }
+                        return next;
+                    });
+                }, 1000);
+                tickRef.current = interval;
+                return () => { if(tickRef.current){ clearInterval(tickRef.current); tickRef.current = null; } };
+            }, [isRunning, currentDuration]);
+
+            // --- Timer Actions ---
+            function startOrReset(){
+                if(isRunning){
+                    setShowModal({
+                        title: "Reset Timer?",
+                        message: "Are you sure you want to reset the current session? This will not log the current phase.",
+                        confirmLabel: "Yes, Reset",
+                        onConfirm: () => {
+                            setIsRunning(false);
+                            setPhaseIndex(0);
+                            setElapsed(0);
+                            setPhaseStart(null);
+                            push('Session reset.');
+                            setShowModal(null);
+                        }
+                    });
+                } else {
+                    setIsRunning(true);
+                    setPhaseStart(nowTs());
+                    setElapsed(0);
+                    push('Session started.');
+                }
+            }
+
+            function advancePhase(reason='manual'){
+                const end = nowTs();
+                const start = phaseStart || end;
+                const durationSec = Math.max(0, Math.floor((end - start)/1000));
+                
+                playSound(dingSound); // Play a sound alert
+
+                const entry = {
+                    appId,
+                    userId: userId || 'unknown',
+                    phase: currentPhase,
+                    durationSeconds: durationSec,
+                    startedAt: start.toISOString(),
+                    endedAt: end.toISOString(),
+                    createdAt: (fb.mode === 'live') ? firebase.firestore.Timestamp.fromDate(end) : end.getTime(),
+                    deviceTime: end.toISOString(),
+                    appVersion: APP_VERSION,
+                    reason,
+                };
+
+                // Persist data
+                if(fb.mode === 'live' && fb.db && fb.user){
+                    const path = fb.db
+                        .collection('artifacts').doc(appId)
+                        .collection('users').doc(fb.user.uid)
+                        .collection('sessions');
+                    path.add(entry).catch(err => console.error("Firestore Save Error:", err));
+                } else {
+                    demoSave(appId, userId || 'demo-user', entry);
+                }
+
+                const nextIndex = (phaseIndex + 1) % DEFAULT_PHASES.length;
+                if(nextIndex === 0){
+                    setIsRunning(false);
+                    push('Cycle completed!');
+                } else {
+                    setIsRunning(true);
+                }
+                setPhaseIndex(nextIndex);
+                setPhaseStart(nowTs());
+                setElapsed(0);
+            }
+
+            // --- Data Fetching and Subscriptions ---
+            const [sessions, setSessions] = useState([]);
+            useEffect(() => {
+                if(fb.mode === 'live' && fb.db && fb.user){
+                    const ref = fb.db
+                        .collection('artifacts').doc(appId)
+                        .collection('users').doc(fb.user.uid)
+                        .collection('sessions')
+                        .orderBy('createdAt', 'desc')
+                        .limit(200);
+                    const unsub = ref.onSnapshot(snap => {
+                        const rows = [];
+                        snap.forEach(doc => rows.push({ id: doc.id, ...doc.data() }));
+                        setSessions(rows);
+                    }, err => console.error("Firestore OnSnapshot Error:", err));
+                    return () => unsub && unsub();
+                } else if(fb.mode === 'demo'){
+                    return demoSubscribe(appId, userId || 'demo-user', setSessions);
+                }
+            }, [fb.mode, fb.db, fb.user, appId, userId]);
+
+            // --- Daily Reminder Scheduling ---
+            useEffect(() => {
+                if(reminderTimerRef.current){ clearTimeout(reminderTimerRef.current); reminderTimerRef.current = null; }
+                if(!dailyTime) return;
+                const [hh, mm] = dailyTime.split(':').map(n => parseInt(n,10));
+                if(Number.isNaN(hh) || Number.isNaN(mm)) return;
+                const now = new Date();
+                const next = new Date();
+                next.setHours(hh, mm, 0, 0);
+                if(next <= now){ next.setDate(next.getDate() + 1); }
+                const delay = Math.max(0, next - now);
+                reminderTimerRef.current = setTimeout(function trigger(){
+                    showReminder("It's time to start your treatment.");
+                    const again = 24 * 60 * 60 * 1000;
+                    reminderTimerRef.current = setTimeout(trigger, again);
+                }, delay);
+                return () => { if(reminderTimerRef.current){ clearTimeout(reminderTimerRef.current); } };
+            }, [dailyTime]);
+
+            // --- Notification and Reminder Logic ---
+            function requestNotifPerm(){
+                if('Notification' in window){
+                    Notification.requestPermission().then(res => {
+                        if(res === 'granted') push('Notifications enabled.');
+                        else push('Notifications permission denied or dismissed.');
+                    });
+                } else { push('Notifications not supported on this device.'); }
+            }
+
+            function showReminder(text){
+                push(text, 6000);
+                try { if(navigator.vibrate) navigator.vibrate([200, 100, 200, 100, 500]); } catch {}
+                if('Notification' in window && Notification.permission === 'granted'){
+                    new Notification('KPD Reminder', { body: text, icon: 'icon-192.png' });
+                }
+            }
+
+            // --- Settings Handling ---
+            function handleDurationChange(phase, val){
+                const n = Math.max(0, Number(val) || 0);
+                const newDurations = { ...durations, [phase]: n };
+                setDurations(newDurations);
+                localStorage.setItem('kpd.durations', JSON.stringify(newDurations));
+            }
+
+            const currentPhaseInstructions = useMemo(() => {
+                switch(currentPhase){
+                    case 'Warming': return 'Place the dialysate bag in the warmer.';
+                    case 'Filling': return 'Connect the tubing and allow fluid to fill.';
+                    case 'Dwell': return 'Rest and allow the fluid to absorb waste.';
+                    case 'Draining': return 'Connect the drain line and empty the used fluid.';
+                    default: return '';
+                }
+            }, [currentPhase]);
+
+            // Total time calculation from session log
+            const totalDailyTime = useMemo(() => {
+                const today = new Date().toLocaleDateString();
+                const total = sessions.reduce((acc, s) => {
+                    const sessionDate = (s.createdAt && s.createdAt.toDate ? s.createdAt.toDate() : new Date(s.endedAt)).toLocaleDateString();
+                    return sessionDate === today ? acc + (s.durationSeconds || 0) : acc;
+                }, 0);
+                return fmtDuration(total);
+            }, [sessions]);
+
+            // --- Modal Component for user interactions ---
+            const Modal = ({ title, message, confirmLabel, onConfirm, onCancel }) => (
+                <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-sm" onClick={onCancel}>
+                    <div className="bg-white rounded-2xl shadow-xl p-6 w-full max-w-sm" onClick={e => e.stopPropagation()}>
+                        <h3 className="text-xl font-semibold">{title}</h3>
+                        <p className="mt-2 text-sm text-slate-600">{message}</p>
+                        <div className="mt-6 flex justify-end gap-3">
+                            <button onClick={onCancel} className="px-4 py-2 text-sm font-medium rounded-xl text-slate-600 hover:text-slate-800">Cancel</button>
+                            <button onClick={onConfirm} className="px-4 py-2 text-sm font-medium rounded-xl text-white bg-rose-600 hover:bg-rose-500">{confirmLabel}</button>
+                        </div>
+                    </div>
+                </div>
+            );
+
+            return (
+                <div className="min-h-screen flex flex-col items-center">
+                    {/* Header */}
+                    <header className="w-full bg-white/80 backdrop-blur sticky top-0 z-20 shadow-sm">
+                        <div className="max-w-3xl mx-auto px-4 py-3 flex items-center justify-between">
+                            <h1 className="text-xl font-semibold tracking-tight">KPD Treatment Timer</h1>
+                            <div className="flex items-center gap-2">
+                                <button onClick={toggleTheme} className="p-2 rounded-full hover:bg-slate-200 transition-colors">
+                                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="w-6 h-6">
+                                        {theme === 'light' ?
+                                            <path d="M12 2.25a.75.75 0 0 1 .75.75v2.25a.75.75 0 0 1-1.5 0V3a.75.75 0 0 1 .75-.75ZM7.5 12a4.5 4.5 0 1 1 9 0 4.5 4.5 0 0 1-9 0ZM18.894 6.184a.75.75 0 0 0-1.06-1.06l-1.591 1.59a.75.75 0 1 0 1.06 1.061l1.591-1.59ZM21.75 12a.75.75 0 0 1-.75.75h-2.25a.75.75 0 0 1 0-1.5H21a.75.75 0 0 1 .75.75ZM17.803 18.894a.75.75 0 0 0 1.06-1.06l-1.59-1.591a.75.75 0 1 0-1.061 1.06l1.59 1.591ZM12 18.75a.75.75 0 0 1 .75.75v2.25a.75.75 0 0 1-1.5 0v-2.25a.75.75 0 0 1 .75-.75ZM6.184 17.803a.75.75 0 0 0-1.061 1.06l1.591 1.59a.75.75 0 1 0 1.06-1.061l-1.59-1.591ZM3 12a.75.75 0 0 1 .75-.75h2.25a.75.75 0 0 1 0 1.5H3.75A.75.75 0 0 1 3 12Zm3.184-5.816a.75.75 0 0 0 1.061-1.06l-1.591-1.59a.75.75 0 1 0-1.06 1.061l1.59 1.59Z" />
+                                            :
+                                            <path fillRule="evenodd" d="M9.52 2.351A.75.75 0 0 1 12 3v.75a.75.75 0 0 1-1.5 0V3a2.25 2.25 0 0 0-2.031 2.512c.16.83.153 1.69-.371 2.417a.75.75 0 0 1-.842.164l-.99-.247a.75.75 0 0 1-.62-.924 10.605 10.605 0 0 1-1.058-4.577A.75.75 0 0 1 5.341 2.25h1.866c.16 0 .307.035.45.099ZM20.45 10.45c-.322.846-.481 1.772-.519 2.723h-2.181a.75.75 0 0 1 0-1.5h1.22c.18-.544.257-1.11.233-1.684a.75.75 0 0 1 .722-.767ZM15.15 17.7a.75.75 0 0 1-.954-.378 7.502 7.502 0 0 0 2.518-3.033.75.75 0 0 1 1.157-.759 9.002 9.002 0 0 1 .98 4.293.75.75 0 0 1-.416.73ZM12 18.75a.75.75 0 0 1 .75-.75h.75a2.25 2.25 0 0 0 2.03-2.513c-.159-.83-.153-1.689.37-2.416a.75.75 0 0 1 .843-.164l.99.247a.75.75 0 0 1 .62.923c.316 1.25.32 2.517.027 3.752a.75.75 0 0 1-.416.598c-1.304.534-2.733.864-4.22.864h-.028Z" clipRule="evenodd" />
+                                        }
+                                    </svg>
+                                </button>
+                                <span className="text-xs text-slate-500">v{APP_VERSION}</span>
+                            </div>
+                        </div>
+                    </header>
+
+                    <main className="w-full max-w-3xl mx-auto px-4 py-6 grid gap-6">
+                        {/* IDs and notification button */}
+                        <section className="bg-white rounded-2xl shadow p-4">
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                                <div>
+                                    <div className="text-sm text-slate-500">App ID</div>
+                                    <div className="font-mono text-sm break-all">{appId}</div>
+                                </div>
+                                <div>
+                                    <div className="text-sm text-slate-500">User ID</div>
+                                    <div className="font-mono text-sm break-all">{userId}</div>
+                                </div>
+                                <div className="flex items-center gap-2">
+                                    <button onClick={requestNotifPerm} className="px-3 py-2 rounded-xl bg-slate-900 text-white text-sm hover:bg-slate-800">Enable Notifications</button>
+                                </div>
+                            </div>
+                            <p className="mt-2 text-xs text-slate-500">These IDs are used for data persistence. The app uses anonymous sign-in to keep your data secure and private.</p>
+                        </section>
+
+                        {/* Timer + Controls */}
+                        <section className="bg-white rounded-2xl shadow p-5">
+                            <div className="flex items-center justify-between">
+                                <h2 className="text-lg font-semibold">KPD Cycle</h2>
+                                <span className={classNames("text-xs px-2 py-1 rounded-full", isRunning ? 'bg-green-100 text-green-700' : 'bg-slate-100 text-slate-600')}>{isRunning ? 'Running' : 'Idle'}</span>
+                            </div>
+
+                            <div className="mt-4 grid grid-cols-2 sm:grid-cols-4 gap-2">
+                                {DEFAULT_PHASES.map((p, i) => (
+                                    <div key={p} className={classNames("rounded-xl border p-3 text-center transition-all", i===phaseIndex ? 'border-slate-900 bg-slate-50' : 'border-slate-200')}>
+                                        <div className="text-sm font-medium">{p}</div>
+                                        <div className="text-xs text-slate-500">Target: {fmtDuration(durations[p]||0)}</div>
+                                    </div>
+                                ))}
+                            </div>
+
+                            <div className="mt-6 flex flex-col items-center">
+                                <div className="text-5xl font-bold tracking-tight tabular-nums">{fmtDuration(elapsed)}</div>
+                                <div className="text-sm text-slate-500 mt-1">{currentPhaseInstructions}</div>
+                                <div className="w-full mt-4 progress-bar-container">
+                                    <div className="progress-bar" style={{ width: `${progress}%` }}></div>
+                                </div>
+
+                                <div className="mt-6 flex flex-wrap items-center justify-center gap-3">
+                                    <button onClick={startOrReset} className={classNames("px-5 py-3 rounded-2xl text-white text-sm font-medium shadow transition-colors", isRunning ? 'bg-rose-600 hover:bg-rose-500' : 'bg-emerald-600 hover:bg-emerald-500')}>
+                                        {isRunning ? 'Reset' : 'Start'}
+                                    </button>
+                                    <button onClick={() => advancePhase('manual')} disabled={!isRunning} className="px-5 py-3 rounded-2xl bg-slate-900 text-white text-sm font-medium shadow transition-colors hover:bg-slate-800 disabled:opacity-50 disabled:cursor-not-allowed">
+                                        Next Phase
+                                    </button>
+                                </div>
+                            </div>
+
+                            {/* Phase duration inputs */}
+                            <div className="mt-8">
+                                <h3 className="text-sm font-semibold">Phase Durations (seconds)</h3>
+                                <p className="text-xs text-slate-500 mt-1">Change these values to match your doctor's prescribed treatment times. They are saved locally.</p>
+                                <div className="mt-3 grid grid-cols-2 sm:grid-cols-4 gap-3">
+                                    {DEFAULT_PHASES.map(p => (
+                                        <label key={p} className="flex flex-col gap-1 text-sm">
+                                            <span className="text-slate-600">{p}</span>
+                                            <input type="number" min="0" inputMode="numeric" className="w-full rounded-xl border border-slate-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-slate-300" value={durations[p]||0} onChange={e => handleDurationChange(p, e.target.value)} />
+                                        </label>
+                                    ))}
+                                </div>
+                            </div>
+                        </section>
+
+                        {/* Daily Treatment Reminder */}
+                        <section className="bg-white rounded-2xl shadow p-5">
+                            <h2 className="text-lg font-semibold">Daily Treatment Reminder</h2>
+                            <p className="text-sm text-slate-600 mt-1">Schedule a daily in-app notification at your preferred time. It uses browser notifications (if permitted) and an on-screen toast.</p>
+                            <div className="mt-4 flex flex-wrap items-center gap-3">
+                                <input type="time" value={dailyTime} onChange={(e)=>{ setDailyTime(e.target.value); localStorage.setItem('kpd.dailyTime', e.target.value || ''); }} className="rounded-xl border border-slate-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-slate-300" />
+                                <button onClick={()=> push(dailyTime ? `Daily reminder set for ${dailyTime}.` : 'Daily reminder cleared.')} className="px-4 py-2 rounded-xl bg-indigo-600 text-white text-sm hover:bg-indigo-500">Save</button>
+                                <button onClick={()=> showReminder('Test reminder: this is what you will see.')} className="px-4 py-2 rounded-xl bg-slate-900 text-white text-sm hover:bg-slate-800">Send Test</button>
+                            </div>
+                        </section>
+
+                        {/* Session Log */}
+                        <section className="bg-white rounded-2xl shadow p-5">
+                            <div className="flex items-center justify-between">
+                                <h2 className="text-lg font-semibold">Session Log</h2>
+                                <span className={classNames('text-xs px-2 py-1 rounded-full', fb.mode==='live' ? 'bg-green-100 text-green-700' : fb.mode==='demo' ? 'bg-amber-100 text-amber-700' : 'bg-rose-100 text-rose-700')}>
+                                    {fb.mode==='live' ? 'Live: Firestore' : fb.mode==='demo' ? 'Demo: Local Only' : fb.mode}
+                                </span>
+                            </div>
+                            <div className="mt-3 max-h-80 overflow-auto rounded-xl border border-slate-200">
+                                <table className="w-full text-sm">
+                                    <thead className="bg-slate-50 sticky top-0">
+                                        <tr className="text-left text-slate-600">
+                                            <th className="px-3 py-2">Phase</th>
+                                            <th className="px-3 py-2">Duration</th>
+                                            <th className="px-3 py-2">Timestamp</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        {sessions.length === 0 ? (
+                                            <tr><td colSpan="3" className="px-3 py-6 text-center text-slate-500">No sessions yet. Finish a phase to log data.</td></tr>
+                                        ) : (
+                                            sessions.map((s, idx) => (
+                                                <tr key={s.id || idx} className={idx % 2 ? 'bg-white' : 'bg-slate-50/50'}>
+                                                    <td className="px-3 py-2 font-medium">{s.phase}</td>
+                                                    <td className="px-3 py-2 tabular-nums">{fmtDuration(s.durationSeconds || 0)}</td>
+                                                    <td className="px-3 py-2 text-slate-600">{(() => {
+                                                        const d = s.createdAt && s.createdAt.toDate ? s.createdAt.toDate() : new Date(s.createdAt || s.endedAt || Date.now());
+                                                        return tsString(d);
+                                                    })()}</td>
+                                                </tr>
+                                            ))
+                                        )}
+                                    </tbody>
+                                </table>
+                            </div>
+                            <div className="mt-4 text-sm font-semibold text-right">
+                                Today's Total Treatment Time: {totalDailyTime}
+                            </div>
+                        </section>
+                    </main>
+
+                    {/* Toasts */}
+                    <div className="fixed left-0 right-0 bottom-4 flex flex-col items-center gap-2 z-50">
+                        {toasts.map(t => (
+                            <div key={t.id} className="max-w-[90%] sm:max-w-md w-fit bg-slate-900 text-white px-4 py-2 rounded-2xl shadow">
+                                {t.text}
+                            </div>
+                        ))}
+                    </div>
+
+                    {/* Modal Dialogs */}
+                    {showModal && (
+                        <Modal
+                            title={showModal.title}
+                            message={showModal.message}
+                            confirmLabel={showModal.confirmLabel}
+                            onConfirm={showModal.onConfirm}
+                            onCancel={() => setShowModal(null)}
+                        />
+                    )}
+
+                    <footer className="mt-auto w-full py-8 text-center text-xs text-slate-500">
+                        Built with React + Tailwind + Firebase via CDNs. No build steps required.
+                    </footer>
+                </div>
+            );
+        }
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
