@@ -39,29 +39,6 @@
     <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
 
-    <!-- Firebase (Compat) via CDN: App + Auth + Firestore -->
-    <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
-    <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
-    <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
-
-    <!-- ======= Firebase Config (EDIT THESE VALUES) ======= -->
-    <script>
-        // Replace with your Firebase project config. Leave as-is for demo mode.
-        window.__FIREBASE_CONFIG__ = {
-            apiKey: "AIzaSyAC6fYbfHK0WBAzzcfocZEYzJi11JLny0k",
-            authDomain: "kpd-care.firebaseapp.com",
-            projectId: "kpd-care",
-            storageBucket: "kpd-care.firebasestorage.app",
-            messagingSenderId: "833639795609",
-            appId: "1:833639795609:web:6f7a8251319515f4a4a108",
-            measurementId: "G-448HC523ZH"
-        };
-        // The Canvas environment provides these global variables.
-        const appIdFromCanvas = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
-        const firebaseConfigFromCanvas = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : null;
-        const initialAuthTokenFromCanvas = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
-    </script>
-
     <!-- ======= App Code (JSX via Babel) ======= -->
     <script type="text/babel">
         const { useEffect, useMemo, useRef, useState } = React;
@@ -134,104 +111,41 @@
         const dingSound = 'data:audio/wav;base64,UklGRl9AAABXQVZFZm10IBAAAAABAAEARKwAAIhYAAACABAAZGF0YR8AAABe4CgAKl8oACVfAACqXwAArl8AAJpeAACaXAAArl8AAL5eAACYXgAALWMAAC5jAACjXwAAmGIAADhiAAAwZgAAcWgAACtqAACxbgAAtnAAAJV2AAC3cAAAj3YAAJt2AAC2dQAACF4AACdgAABkYQAAoVwAACVhAAAYXgAALmEAAHxjAABlYwAAL2MAAGdjAAB9agAAk3YAAHlwAAAj3YAAA7gAAAH3AAAO4AAAHoAAAAhYAAAMWAAACEAAAoGAAAKGAAG2AAQ4AIAAnAAAAA==';
 
         /*************************
-         * Firebase / Mock Layer
-         * Handles authentication and data persistence.
+         * Local Storage Layer
+         * Handles data persistence entirely in the browser.
          *************************/
-        function isConfigReady(cfg){
-            if(!cfg) return false;
-            const vals = Object.values(cfg||{}).join(',');
-            return !(vals.includes('AIzaSy') || vals.includes('YOUR_PROJECT'));
+        const LOCAL_STORAGE_KEY = "kpd.sessions";
+
+        function saveSession(session){
+            const arr = JSON.parse(localStorage.getItem(LOCAL_STORAGE_KEY) || '[]');
+            arr.push(session);
+            localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(arr));
+            // Trigger storage event to notify other tabs/windows
+            try { localStorage.setItem(`${LOCAL_STORAGE_KEY}.ping`, String(Date.now())); } catch {}
         }
 
-        function useFirebase(){
-            const [state, setState] = useState({ mode: 'loading', user: null, db: null, error: null });
-            const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
-
+        function useLocalData(){
+            const [state, setState] = useState({ sessions: [] });
             useEffect(() => {
-                let isCancelled = false;
-                (async () => {
-                    try {
-                        let app;
-                        let db;
-                        let auth;
-                        let user;
-
-                        const firebaseConfig = firebaseConfigFromCanvas || window.__FIREBASE_CONFIG__;
-                        if(isConfigReady(firebaseConfig)){
-                             // Live mode using Firestore
-                            app = firebase.initializeApp(firebaseConfig);
-                            db = firebase.firestore();
-                            auth = firebase.auth();
-
-                            // Wait for auth to be ready
-                            const authReady = new Promise(resolve => {
-                                const unsubscribe = auth.onAuthStateChanged(firebaseUser => {
-                                    if(firebaseUser) resolve(firebaseUser);
-                                    unsubscribe();
-                                });
-                            });
-
-                            if(initialAuthTokenFromCanvas) {
-                                await auth.signInWithCustomToken(initialAuthTokenFromCanvas);
-                            } else {
-                                await auth.signInAnonymously();
-                            }
-                            user = await authReady;
-
-                            if(!isCancelled){
-                                setState({ mode: 'live', user, db, error: null });
-                            }
-                        } else {
-                            // Demo/local mode using localStorage to "mock" Firestore
-                            if(!isCancelled){
-                                setState({ mode: 'demo', user: { uid: 'demo-user' }, db: null, error: null });
-                            }
-                        }
-                    } catch (e){
-                        console.error("Firebase Initialization Error:", e);
-                        if(!isCancelled){
-                            setState({ mode: 'error', user: null, db: null, error: e });
-                        }
-                    }
-                })();
-                return () => { isCancelled = true; };
+                const fetchSessions = () => {
+                    const sessions = JSON.parse(localStorage.getItem(LOCAL_STORAGE_KEY) || '[]')
+                        .sort((a,b) => new Date(b.endedAt) - new Date(a.endedAt));
+                    setState({ sessions });
+                };
+                fetchSessions();
+                window.addEventListener('storage', fetchSessions);
+                return () => window.removeEventListener('storage', fetchSessions);
             }, []);
             return state;
-        }
-
-        // Local demo storage helpers
-        function demoSave(appId, userId, entry){
-            const key = `kpd.sessions.${appId}.${userId}`;
-            const arr = JSON.parse(localStorage.getItem(key) || '[]');
-            arr.push(entry);
-            localStorage.setItem(key, JSON.stringify(arr));
-            try { localStorage.setItem(`${key}.ping`, String(Date.now())); } catch {}
-        }
-        function demoSubscribe(appId, userId, cb){
-            const key = `kpd.sessions.${appId}.${userId}`;
-            const emit = () => {
-                const arr = JSON.parse(localStorage.getItem(key) || '[]');
-                arr.sort((a,b) => (b.createdAt?.toMillis || b.createdAt) - (a.createdAt?.toMillis || a.createdAt));
-                cb(arr);
-            };
-            emit();
-            const handler = (e) => {
-                if(e.key && (e.key === key || e.key === `${key}.ping`)) emit();
-            };
-            window.addEventListener('storage', handler);
-            return () => window.removeEventListener('storage', handler);
         }
 
         /*************************
          * Main App Component
          *************************/
         function App(){
-            const appId = useMemo(() => appIdFromCanvas, []);
             const { toasts, push } = useToasts();
             const [theme, toggleTheme] = useTheme();
             const [showModal, setShowModal] = useState(null);
-
-            const fb = useFirebase();
 
             // Timer state
             const [phaseIndex, setPhaseIndex] = useState(0);
@@ -239,7 +153,7 @@
             const [phaseStart, setPhaseStart] = useState(null);
             const [elapsed, setElapsed] = useState(0);
             const tickRef = useRef(null);
-            const userId = fb.user?.uid || '—';
+            const userId = '—'; // No user ID in local mode
 
             // Settings state, persisted via localStorage
             const [durations, setDurations] = useState(() => {
@@ -248,6 +162,8 @@
             });
             const [dailyTime, setDailyTime] = useState(localStorage.getItem('kpd.dailyTime') || '');
             const reminderTimerRef = useRef(null);
+
+            const { sessions } = useLocalData();
 
             const currentPhase = DEFAULT_PHASES[phaseIndex];
             const currentDuration = durations[currentPhase] || 0;
@@ -305,28 +221,20 @@
                 playSound(dingSound); // Play a sound alert
 
                 const entry = {
-                    appId,
-                    userId: userId || 'unknown',
+                    id: crypto.randomUUID(), // Local unique ID
                     phase: currentPhase,
                     durationSeconds: durationSec,
                     startedAt: start.toISOString(),
                     endedAt: end.toISOString(),
-                    createdAt: (fb.mode === 'live') ? firebase.firestore.Timestamp.fromDate(end) : end.getTime(),
+                    createdAt: end.getTime(),
                     deviceTime: end.toISOString(),
                     appVersion: APP_VERSION,
                     reason,
                 };
 
-                // Persist data
-                if(fb.mode === 'live' && fb.db && fb.user){
-                    const path = fb.db
-                        .collection('artifacts').doc(appId)
-                        .collection('users').doc(fb.user.uid)
-                        .collection('sessions');
-                    path.add(entry).catch(err => console.error("Firestore Save Error:", err));
-                } else {
-                    demoSave(appId, userId || 'demo-user', entry);
-                }
+                // Persist data in local storage
+                saveSession(entry);
+                push(`Phase ${currentPhase} complete!`);
 
                 const nextIndex = (phaseIndex + 1) % DEFAULT_PHASES.length;
                 if(nextIndex === 0){
@@ -339,27 +247,6 @@
                 setPhaseStart(nowTs());
                 setElapsed(0);
             }
-
-            // --- Data Fetching and Subscriptions ---
-            const [sessions, setSessions] = useState([]);
-            useEffect(() => {
-                if(fb.mode === 'live' && fb.db && fb.user){
-                    const ref = fb.db
-                        .collection('artifacts').doc(appId)
-                        .collection('users').doc(fb.user.uid)
-                        .collection('sessions')
-                        .orderBy('createdAt', 'desc')
-                        .limit(200);
-                    const unsub = ref.onSnapshot(snap => {
-                        const rows = [];
-                        snap.forEach(doc => rows.push({ id: doc.id, ...doc.data() }));
-                        setSessions(rows);
-                    }, err => console.error("Firestore OnSnapshot Error:", err));
-                    return () => unsub && unsub();
-                } else if(fb.mode === 'demo'){
-                    return demoSubscribe(appId, userId || 'demo-user', setSessions);
-                }
-            }, [fb.mode, fb.db, fb.user, appId, userId]);
 
             // --- Daily Reminder Scheduling ---
             useEffect(() => {
@@ -420,7 +307,7 @@
             const totalDailyTime = useMemo(() => {
                 const today = new Date().toLocaleDateString();
                 const total = sessions.reduce((acc, s) => {
-                    const sessionDate = (s.createdAt && s.createdAt.toDate ? s.createdAt.toDate() : new Date(s.endedAt)).toLocaleDateString();
+                    const sessionDate = new Date(s.endedAt).toLocaleDateString();
                     return sessionDate === today ? acc + (s.durationSeconds || 0) : acc;
                 }, 0);
                 return fmtDuration(total);
@@ -434,7 +321,9 @@
                         <p className="mt-2 text-sm text-slate-600">{message}</p>
                         <div className="mt-6 flex justify-end gap-3">
                             <button onClick={onCancel} className="px-4 py-2 text-sm font-medium rounded-xl text-slate-600 hover:text-slate-800">Cancel</button>
-                            <button onClick={onConfirm} className="px-4 py-2 text-sm font-medium rounded-xl text-white bg-rose-600 hover:bg-rose-500">{confirmLabel}</button>
+                            <button onClick={onConfirm} className="px-4 py-2 text-sm font-medium rounded-xl text-rose-600 hover:bg-rose-500">
+                                <span className="text-white bg-rose-600 rounded-xl px-4 py-2 hover:bg-rose-500">{confirmLabel}</span>
+                            </button>
                         </div>
                     </div>
                 </div>
@@ -462,23 +351,15 @@
                     </header>
 
                     <main className="w-full max-w-3xl mx-auto px-4 py-6 grid gap-6">
-                        {/* IDs and notification button */}
-                        <section className="bg-white rounded-2xl shadow p-4">
-                            <div className="flex flex-wrap items-center justify-between gap-2">
-                                <div>
-                                    <div className="text-sm text-slate-500">App ID</div>
-                                    <div className="font-mono text-sm break-all">{appId}</div>
-                                </div>
-                                <div>
-                                    <div className="text-sm text-slate-500">User ID</div>
-                                    <div className="font-mono text-sm break-all">{userId}</div>
-                                </div>
-                                <div className="flex items-center gap-2">
-                                    <button onClick={requestNotifPerm} className="px-3 py-2 rounded-xl bg-slate-900 text-white text-sm hover:bg-slate-800">Enable Notifications</button>
-                                </div>
-                            </div>
-                            <p className="mt-2 text-xs text-slate-500">These IDs are used for data persistence. The app uses anonymous sign-in to keep your data secure and private.</p>
-                        </section>
+
+                        {/* DEMO MESSAGE */}
+                        <div className="rounded-2xl p-4 text-center bg-white shadow">
+                           <h2 className="text-xl sm:text-2xl font-black text-rose-600">
+                               THIS IS JUST A DEMO APP.<br/>
+                               WE WILL BUILD THE ACTUAL APP AFTER OUR PROJECT WILL BE APPROVED.<br/>
+                               THIS APP LACKS SOME FEAUTURE.
+                           </h2>
+                        </div>
 
                         {/* Timer + Controls */}
                         <section className="bg-white rounded-2xl shadow p-5">
@@ -543,9 +424,7 @@
                         <section className="bg-white rounded-2xl shadow p-5">
                             <div className="flex items-center justify-between">
                                 <h2 className="text-lg font-semibold">Session Log</h2>
-                                <span className={classNames('text-xs px-2 py-1 rounded-full', fb.mode==='live' ? 'bg-green-100 text-green-700' : fb.mode==='demo' ? 'bg-amber-100 text-amber-700' : 'bg-rose-100 text-rose-700')}>
-                                    {fb.mode==='live' ? 'Live: Firestore' : fb.mode==='demo' ? 'Demo: Local Only' : fb.mode}
-                                </span>
+                                <span className="text-xs px-2 py-1 rounded-full bg-amber-100 text-amber-700">Local Only</span>
                             </div>
                             <div className="mt-3 max-h-80 overflow-auto rounded-xl border border-slate-200">
                                 <table className="w-full text-sm">
@@ -564,10 +443,7 @@
                                                 <tr key={s.id || idx} className={idx % 2 ? 'bg-white' : 'bg-slate-50/50'}>
                                                     <td className="px-3 py-2 font-medium">{s.phase}</td>
                                                     <td className="px-3 py-2 tabular-nums">{fmtDuration(s.durationSeconds || 0)}</td>
-                                                    <td className="px-3 py-2 text-slate-600">{(() => {
-                                                        const d = s.createdAt && s.createdAt.toDate ? s.createdAt.toDate() : new Date(s.createdAt || s.endedAt || Date.now());
-                                                        return tsString(d);
-                                                    })()}</td>
+                                                    <td className="px-3 py-2 text-slate-600">{tsString(new Date(s.endedAt))}</td>
                                                 </tr>
                                             ))
                                         )}
@@ -601,7 +477,7 @@
                     )}
 
                     <footer className="mt-auto w-full py-8 text-center text-xs text-slate-500">
-                        Built with React + Tailwind + Firebase via CDNs. No build steps required.
+                        Built with React + Tailwind via CDNs. No build steps required.
                     </footer>
                 </div>
             );
